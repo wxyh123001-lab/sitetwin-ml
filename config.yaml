@@ -1,0 +1,114 @@
+# SiteTwin ML 模块配置文件
+# 所有阈值集中在这里，方便硬件数据到位后校准，不需要改代码
+
+# ---------- L0 数据守门 ----------
+gatekeeper:
+  # 超过多久没收到某个pod的数据，判定为离线
+  offline_timeout_seconds:
+    pod_01: 600   # 环境舱，周期上报，允许更长超时
+    pod_02: 900   # 活动舱，事件驱动+心跳，心跳间隔更长
+    pod_03: 180   # 设备舱，上报频繁，超时应更快发现
+  low_battery_pct: 20
+  # 物理不可能的读数范围（超出则标记 sensor_fault）
+  physical_range:
+    temperature: [-20, 80]
+    humidity: [0, 100]
+    co2: [300, 10000]
+    voc_index: [0, 500]
+  # 读数长时间完全不变，怀疑传感器卡死
+  stuck_check:
+    window_minutes: 60
+    min_variation:
+      temperature: 0.1
+      co2: 5
+
+# ---------- L1 绝对底线（不看上下文，达阈值即报） ----------
+hard_limits:
+  temperature_critical: 32       # °C
+  co2_critical: 2500             # ppm
+  equip_temp_critical: 70        # °C
+  vib_abnormal_rms: 1.0          # 占位值，单位m/s^2（已确认由传感器/固件端算好X/Y/Z的RMS，
+                                  # 假定已去除重力分量），需按ADXL345实测基线校准
+
+# ---------- 单传感器标签离散化阈值 ----------
+labels:
+  temperature:
+    low: 18
+    high: 26        # 18-26 normal, 26-32 high, >32 critical(见hard_limits)
+  humidity:
+    low: 30
+    high: 60
+  co2:
+    normal: 800
+    elevated: 1500
+    high: 2500       # >2500 critical(见hard_limits)
+  voc:
+    elevated: 100
+    high: 250
+  light_lux_on: 50
+
+# ---------- L2 组合场景规则 ----------
+# occupancy状态机已彻底移除（见架构说明文档七/八节），以下规则均不依赖"是否有人"
+# 这类无法可靠推断的判断，只用可直接观测的持续状态或跨pod信号互相印证。
+scenarios:
+  equip_high_load:
+    severity: info
+  equip_stall_risk:
+    severity: critical
+  vibration_mechanical_fault:
+    severity: warning
+  door_left_open:
+    duration_minutes: 20           # 门磁原生持续状态，超过这个时长视为异常
+    severity: info
+  equip_overheat_air_quality:
+    window_minutes: 15
+    equip_temp_rise_c: 5           # 窗口内equip_temp至少上升这么多度才算"在涨"
+    current_rise_ratio: 0.2        # 窗口内current相对涨幅超过这个比例才算"在涨"
+    severity: warning
+  equip_cooling_failure:
+    window_minutes: 15
+    equip_temp_rise_c: 5
+    current_max_change_ratio: 0.05 # current窗口内相对变化不超过这个比例才算"稳定"
+    severity: warning
+  rapid_multi_signal_spike:
+    window_minutes: 5
+    temperature_jump_c: 3
+    equip_temp_jump_c: 5
+    vibration_jump: 0.3
+    severity: critical
+
+# ---------- L3 学习层 ----------
+l3:
+  contamination: 0.02
+  n_estimators: 200
+  # 门槛必须和contamination量级匹配：百分位打分法下，
+  # 0.98意味着"比98%的正常点更罕见才报警"，大致对应contamination=0.02。
+  # 最终数值仍需用evaluate.py的ROC结果校准，这里只是量级正确的起点。
+  score_alert_threshold: 0.98
+  models_dir: "models"
+
+# ---------- 冷启动（按站点本地训练） ----------
+# 不同站点温度/CO2/电流基线不同，模型不能跨站点复用。首次部署没有模型，
+# 先只跑L0-L2收集本站点的正常数据，攒够后本地训练L3并激活；之后直接加载模型。
+# "攒够"看的是数据自身的时间跨度（最早到最晚样本的时间戳之差），不看程序运行时长，
+# 这样重启不丢进度、空转期间不虚增天数。
+cold_start:
+  collection_days: 7        # 收集满这么多天的本地正常数据后才训练
+  recheck_interval_hours: 1 # 攒够天数后诊断若没过（某字段全程没变），每隔这么久复查一次，
+                            # 而不是每轮都重跑——只有等缺的行为真出现，重诊断才可能变结果
+
+# ---------- 融合层 ----------
+fusion:
+  severity_rank: [info, warning, critical]
+  l3_only_severity: info
+  escalate_on_l3_corroboration: true
+
+# ---------- ThingsBoard 数据源（--source thingsboard 时用；跑模拟数据时忽略） ----------
+# 凭证不放这里！用户名/密码从环境变量 TB_USERNAME / TB_PASSWORD 读取（见文档安全说明）。
+thingsboard:
+  host: "http://<TB_HOST>:8080"      # 占位，填真实ThingsBoard地址
+  poll_interval_seconds: 60          # 轮询间隔
+  # ThingsBoard设备名 -> 我们的pod_id 映射（设备名格式 POD_<Zigbee短地址>）
+  # 下面是占位，等拿到真实设备名后替换
+  device_to_pod:
+    POD_TEST: pod_01

@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# Local secrets / environment (TB_USERNAME / TB_PASSWORD live here, never committed)
+.env
+*.env
+
+# Trained models: trained per-site at runtime via cold start, not source
+models/
+
+# Generated data and cold-start collection buffers
+training_data/
+
+# Model-selection experiment outputs (regenerable via ml/train_*.py)
+ml/experiments/
+
+# IDE
+.idea/
+.vscode/
+
+# OS / editor
+.DS_Store
+Thumbs.db
