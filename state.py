@@ -13,6 +13,20 @@ class Alert:
     severity: str         # "info" / "warning" / "critical"
     message: str
     pod_id: Optional[str] = None
+    # For cross-pod scenarios (e.g. rapid_multi_signal_spike) that aren't
+    # attributable to one single pod: every pod that contributed to the
+    # trigger. Leave empty for single-pod alerts, use pod_id instead.
+    pod_ids: list = field(default_factory=list)
+
+    def target_pod_ids(self) -> list:
+        """All pod ids this alert is attributed to, regardless of whether it
+        was raised via pod_id (single-pod) or pod_ids (cross-pod) -- e.g. for
+        attaching a ThingsBoard alarm to every relevant device."""
+        if self.pod_ids:
+            return list(self.pod_ids)
+        if self.pod_id:
+            return [self.pod_id]
+        return []
 
 
 @dataclass
@@ -33,12 +47,17 @@ class Snapshot:
     anomaly_scores_by_model: dict = field(default_factory=dict)
 
     def is_pod_trustworthy(self, pod_id: str, allow_stuck_suspect: bool = False) -> bool:
-        status = self.data_quality.get(pod_id)
+        # No verdict recorded means no L0 ran (L0 is disabled -- hardware already
+        # vets the data before it reaches this pipeline), so default to trustworthy
+        # instead of the old fail-closed "unknown -> not trusted".
+        if pod_id not in self.data_quality:
+            return True
+        status = self.data_quality[pod_id]
         if status == "ok":
             return True
         if allow_stuck_suspect and status == "stuck_suspect":
             return True
         return False
 
-    def add_alert(self, layer, rule_id, severity, message, pod_id=None):
-        self.alerts.append(Alert(layer, rule_id, severity, message, pod_id))
+    def add_alert(self, layer, rule_id, severity, message, pod_id=None, pod_ids=None):
+        self.alerts.append(Alert(layer, rule_id, severity, message, pod_id, pod_ids or []))

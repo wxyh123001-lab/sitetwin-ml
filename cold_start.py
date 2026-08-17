@@ -4,8 +4,10 @@ Cold-start (per-site local training) logic.
 A model trained at one site does not transfer to another -- temperature / CO2 /
 current baselines differ by location -- so the system must train on each site's
 own data. On first run there is no model yet: it collects this site's
-"confirmed normal" data (running L0-L2 only, no model), and once it has enough,
-trains L3 locally and activates it. Subsequent runs just load that model.
+"confirmed normal" data (running L2 only, no model -- L0/L1 are not run, the
+hardware side already handles data-quality gatekeeping and hard-limit
+alerting), and once it has enough, trains L3 locally and activates it.
+Subsequent runs just load that model.
 
 "Enough" is judged by the SPAN of the collected data (earliest to latest
 timestamp), not wall-clock time -- robust to restarts and to idle periods.
@@ -37,10 +39,12 @@ def collected_span_days(snapshots):
 
 
 def collect_normal(snapshots, config):
-    """Run L0-L2 only (no model needed) and return the snapshots that trigger no
-    alert -- the 'confirmed normal' subset used for training."""
+    """Run L2 only (no model needed; L0/L1 are not run -- hardware already
+    handles data-quality gatekeeping and hard-limit alerting) and return the
+    snapshots that trigger no alert -- the 'confirmed normal' subset used for
+    training."""
     from pipeline import Pipeline
-    pipeline = Pipeline(config, layers=["L0", "L1", "L2"])
+    pipeline = Pipeline(config, layers=["L2"])
     normal = []
     for snap in snapshots:
         if pipeline.run(snap)["alert_state"] == "normal":

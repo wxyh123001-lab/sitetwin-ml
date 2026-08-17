@@ -75,10 +75,13 @@ def generate_day(start_dt, days=1, step_minutes=5, seed=42, inject_anomalies=Non
         # current: confirmed unit is mA. ~200mA running / near-0 idle is a placeholder
         # small-motor magnitude, not a calibrated value -- still needs real hardware data.
         current = (200.0 + rng.gauss(0, 20)) if equip_running else max(0, rng.gauss(0, 2))
-        # vibration_rms: confirmed unit is m/s^2, delivered pre-computed by the sensor/
-        # firmware from the X/Y/Z axes (no aggregation logic needed on our end); assumed
-        # gravity-removed (standard practice for vibration RMS, distinct from raw
-        # acceleration magnitude) -- baseline near 0 at rest, not near 9.8
+        # vibration_rms: unit is g, not m/s^2 as previously assumed -- corrected per
+        # TB_Data_Reference_for_ML.md (real capability name is vibration_rms_g).
+        # Delivered pre-computed by the sensor/firmware from the X/Y/Z axes (no
+        # aggregation logic needed on our end); assumed gravity-removed (standard
+        # practice for vibration RMS, distinct from raw acceleration magnitude) --
+        # baseline near 0 at rest, not near 1. These simulated magnitudes were
+        # tuned by feel, not against real g-scale data -- may need revisiting.
         vibration = (0.15 + rng.gauss(0, 0.02)) if equip_running else max(0, rng.gauss(0, 0.005))
         equip_temp = _temp_curve(hour) + (5 if equip_running else 0) + rng.gauss(0, 0.5)
 

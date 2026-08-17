@@ -92,10 +92,15 @@ def discretize(config, pod_id, reading):
             labels["current_label"] = "high"
 
     if "vibration_rms" in reading:
-        # unit confirmed as m/s^2, delivered pre-computed by the sensor/firmware from
-        # the X/Y/Z axes (gravity-removed, per the standard vibration-RMS convention --
-        # baseline near 0 at rest, not near 9.8). Banding threshold itself
-        # (hard_limits.vib_abnormal_rms) is still a placeholder pending real calibration.
+        # unit is g, not m/s^2 as previously assumed -- corrected per
+        # TB_Data_Reference_for_ML.md (real capability name is vibration_rms_g).
+        # Delivered pre-computed by the sensor/firmware from the X/Y/Z axes
+        # (gravity-removed, per the standard vibration-RMS convention -- baseline
+        # near 0 at rest, not near 1g). Both the 0.02 "none" cutoff below and the
+        # "normal"/"abnormal" band threshold (hard_limits.vib_abnormal_rms) were
+        # only ever placeholders and are still pending real g-scale calibration
+        # against the ADXL345 -- the unit fix here does not make these numbers
+        # correct, just correctly labeled.
         vib = reading["vibration_rms"]
         if vib is None or vib < 0.02:
             labels["vib_label"] = "none"
@@ -255,7 +260,8 @@ class ScenarioRules:
             snapshot.add_alert(
                 "L2", "scene_rapid_multi_signal_spike", cfg["severity"],
                 "Multiple independent signals (ambient temperature, equipment temperature, vibration) "
-                "spiked within a short window, possible violent event")
+                "spiked within a short window, possible violent event",
+                pod_ids=[env_pod, equip_pod])
 
 
 class ContextLayer:

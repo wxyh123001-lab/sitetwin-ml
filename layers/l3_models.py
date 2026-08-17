@@ -72,6 +72,14 @@ class L3Layer:
         snapshot.anomaly_score = lof_score
 
         if snapshot.anomaly_score >= self.alert_threshold:
+            # Severity is intentionally hardcoded "info", not read from
+            # config["fusion"]["l3_only_severity"] -- that config key exists but
+            # fusion.py never reads it, so editing it has no effect. Kept
+            # hardcoded here on purpose (see "anomaly score != severity" in the
+            # design notes): an L3-only hit has no rule-layer corroboration, so
+            # it should never outrank a real L1/L2 alert on its own; if it does
+            # coincide with one, fusion.py's escalate_on_l3_corroboration bumps
+            # that alert's severity instead.
             snapshot.add_alert(
                 "L3", "l3_rare_pattern", "info",
                 f"Rare data combination detected, anomaly score {snapshot.anomaly_score:.2f} (not corroborated by the rule layers)"

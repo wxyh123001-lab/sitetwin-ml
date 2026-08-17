@@ -44,7 +44,7 @@ class AlertFusion:
             "triggered_rules": triggered_rules,
             "alerts": [
                 {"layer": a.layer, "rule_id": a.rule_id, "severity": a.severity,
-                 "message": a.message, "pod_id": a.pod_id}
+                 "message": a.message, "pod_id": a.pod_id, "pod_ids": a.target_pod_ids()}
                 for a in alerts
             ],
         }

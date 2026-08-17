@@ -27,8 +27,9 @@ hard_limits:
   temperature_critical: 32       # °C
   co2_critical: 2500             # ppm
   equip_temp_critical: 70        # °C
-  vib_abnormal_rms: 1.0          # 占位值，单位m/s^2（已确认由传感器/固件端算好X/Y/Z的RMS，
-                                  # 假定已去除重力分量），需按ADXL345实测基线校准
+  vib_abnormal_rms: 1.0          # 占位值，单位g（按TB_Data_Reference_for_ML.md确认，capability叫
+                                  # vibration_rms_g，之前按m/s^2理解是错的）。由传感器/固件端算好
+                                  # X/Y/Z的RMS，假定已去除重力分量，具体数值仍需按ADXL345实测基线校准
 
 # ---------- 单传感器标签离散化阈值 ----------
 labels:
@@ -100,15 +101,26 @@ cold_start:
 # ---------- 融合层 ----------
 fusion:
   severity_rank: [info, warning, critical]
+  # 目前未接线：fusion.py 从没读过这个键，L3-only 告警的severity是硬编码在
+  # layers/l3_models.py 里的"info"（有意为之，见该处注释），改这里不会生效。
   l3_only_severity: info
   escalate_on_l3_corroboration: true
 
 # ---------- ThingsBoard 数据源（--source thingsboard 时用；跑模拟数据时忽略） ----------
 # 凭证不放这里！用户名/密码从环境变量 TB_USERNAME / TB_PASSWORD 读取（见文档安全说明）。
 thingsboard:
-  host: "http://<TB_HOST>:8080"      # 占位，填真实ThingsBoard地址
+  host: "http://localhost:8080"      # 占位，填真实ThingsBoard地址
   poll_interval_seconds: 60          # 轮询间隔
   # ThingsBoard设备名 -> 我们的pod_id 映射（设备名格式 POD_<Zigbee短地址>）
   # 下面是占位，等拿到真实设备名后替换
   device_to_pod:
-    POD_TEST: pod_01
+    POD_67C3: pod_01
+    POD_6647: pod_02
+    POD_1FBA: pod_03
+  # 占位映射，尚未确认最终对应关系：我们内部三级severity -> ThingsBoard告警
+  # severity枚举(CRITICAL/MAJOR/MINOR/WARNING/INDETERMINATE)。当前只是量级
+  # 大致对应的占位值，改之前先跟你确认
+  severity_map:
+    critical: CRITICAL
+    warning: WARNING
+    info: INDETERMINATE

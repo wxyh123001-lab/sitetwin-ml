@@ -1,6 +1,6 @@
 """
 ThingsBoard REST API client -- raw HTTP calls following thingsboard_api_reference.md.
-Response *parsing* (string->number, SLOT->field, ms->datetime) lives in
+Response *parsing* (string->number, sensor-key->field, ms->datetime) lives in
 converters.py; this file only does the requests themselves.
 
 Credentials are NOT hardcoded (per the doc's security note): username/password
@@ -49,6 +49,16 @@ class ThingsBoardClient:
         resp.raise_for_status()
         return resp.json()
 
+    def _post(self, path, json_body=None):
+        """POST with the auth header; same 401 re-login retry as _get."""
+        url = f"{self.host}{path}"
+        resp = requests.post(url, json=json_body, headers=self._headers(), timeout=self.timeout)
+        if resp.status_code == 401 and self._username:
+            self.login(self._username, self._password)
+            resp = requests.post(url, json=json_body, headers=self._headers(), timeout=self.timeout)
+        resp.raise_for_status()
+        return resp.json()
+
     # ---------- 3. Finding a device's internal ID ----------
 
     def get_device_id(self, device_name):
@@ -72,7 +82,7 @@ class ThingsBoardClient:
     def get_timeseries(self, device_id, keys, start_ts, end_ts, limit=None, agg=None, interval=None):
         """
         GET .../values/timeseries -> {key: [{ts, value}, ...], ...}.
-        keys: list of key names (e.g. the SLOT_<n> names). start_ts/end_ts: epoch ms.
+        keys: list of key names (e.g. "sht41_temperature", "scd41_co2"). start_ts/end_ts: epoch ms.
         Optional limit (raise the ~100 default cap) and agg/interval (pre-aggregation).
         """
         params = {"keys": ",".join(keys), "startTs": int(start_ts), "endTs": int(end_ts)}
@@ -91,3 +101,28 @@ class ThingsBoardClient:
         """GET /api/alarm/DEVICE/{deviceId} -> alarm records for that device."""
         return self._get(f"/api/alarm/DEVICE/{device_id}",
                          params={"pageSize": page_size, "page": page})
+
+    def create_alarm(self, device_id, alarm_type, severity, details=None):
+        """
+        POST /api/alarm -> create (or update, if one of the same type is already
+        ACTIVE for this device) an alarm on a device.
+
+        NOT covered by thingsboard_api_reference.md -- that doc only documents
+        reading ThingsBoard's own auto-generated alarms. This follows
+        ThingsBoard's general/standard REST API shape and has not been verified
+        against a live instance yet.
+
+        severity must be one of ThingsBoard's enum: CRITICAL / MAJOR / MINOR /
+        WARNING / INDETERMINATE (see config.yaml's thingsboard.severity_map for
+        the info/warning/critical -> this mapping, still a placeholder pending
+        confirmation).
+        """
+        body = {
+            "type": alarm_type,
+            "originator": {"entityType": "DEVICE", "id": device_id},
+            "severity": severity,
+            "status": "ACTIVE_UNACK",
+        }
+        if details:
+            body["details"] = details
+        return self._post("/api/alarm", body)

@@ -3,10 +3,6 @@ Data-source conversion layer. pipeline.run() only understands the unified
 format and doesn't care where the data came from.
 One conversion function per real data source (MQTT/ThingsBoard REST/serial),
 all with the same output format: {"pod_01": {...}, "pod_02": {...}, "pod_03": {...}}
-
-Real field names should follow whatever Vineet/ThingsBoard actually provides;
-the field names here are placeholder examples only, adjust when wiring up
-real hardware.
 """
 from datetime import datetime
 from state import Snapshot
@@ -24,61 +20,143 @@ def from_mqtt_message(topic, payload_json):
     return pod_id, payload_json.get("sensors", {})
 
 
-# ---------- ThingsBoard REST parsing (see thingsboard_api_reference.md) ----------
+# ---------- ThingsBoard REST parsing (see TB_Data_Reference_for_ML.md, captured
+# live from real hardware 2026-08-16 -- ground truth, supersedes the older
+# thingsboard_api_reference.md's SLOT_<n> description, which real devices don't
+# actually use) ----------
 #
-# Three ThingsBoard-specific format quirks handled here (quality_flags handling
-# is deliberately NOT done yet -- separate follow-up):
-#   1. telemetry values arrive as STRINGS even for numbers -> cast explicitly
-#   2. keys are opaque SLOT_<n> slots, not field names -> map via each device's
-#      _sensor_kind attribute (which physical sensor sits in which slot is NOT
-#      fixed, so it must be looked up, never hardcoded per slot position)
+# Real format, four things to handle:
+#   1. telemetry values arrive as STRINGS even for numbers/booleans -> cast explicitly
+#   2. reading keys are real semantic sensor ids (e.g. "sht41_temperature",
+#      "scd41_co2"), not opaque slots -- but which physical sensor is present on
+#      a given device is still only knowable via that device's own
+#      "{sensor_id}_sensor_kind" attribute, so it must be looked up per device,
+#      never hardcoded by key name alone (two different sensor ids can report
+#      the same sensor_kind -- see _POD_SPECIFIC_KIND_TO_FIELD below)
 #   3. timestamps are epoch MILLISECONDS, and results are newest-first
+#   4. values always come from the raw sensor_id field, never from the
+#      alarm_{capability}_{rule_kind}_* group -- the ONLY thing polled from
+#      that group is "..._active", and only to gate the raw reading: when a
+#      capability's alarm is currently active, its reading is dropped entirely
+#      for this poll (hardware already considers it out of bounds, doc 4.3 --
+#      we don't want L2/L3 treating it as a normal sample). Everything else in
+#      that group (_observed/_instance_id/_threshold/_acknowledged/_transition/
+#      _reason/_sensor_id/_quality_flags) is never requested.
 
-# ThingsBoard _sensor_kind attribute value -> our canonical field name.
-# temperature_c / relative_humidity_percent / illuminance_lux are the only
-# values confirmed in the doc; the rest are best-guess names and MUST be
-# checked against the real firmware vocabulary before trusting them.
+# ThingsBoard "sensor_kind" attribute value -> our canonical field name.
+# Confirmed against real captured data (TB_Data_Reference_for_ML.md section 6)
+# unless marked "unconfirmed".
 SENSOR_KIND_TO_FIELD = {
-    "temperature_c": "temperature",              # NOTE: env temp; equipment surface temp
-                                                  # may also report as temperature_c -- needs a
-                                                  # distinct kind or pod-context to disambiguate
-    "surface_temperature_c": "equip_temp",       # guessed
-    "equipment_temperature_c": "equip_temp",     # guessed
-    "relative_humidity_percent": "humidity",
-    "co2_ppm": "co2",                             # guessed
-    "voc_index": "voc_index",                     # guessed
-    "illuminance_lux": "light_lux",
-    "current_ma": "current",                      # guessed (unit confirmed mA)
-    "vibration_rms_ms2": "vibration_rms",         # guessed (unit confirmed m/s^2)
-    "motion": "pir_triggered",                    # guessed
-    "pir": "pir_triggered",                       # guessed
-    "contact": "door_state",                      # guessed (reed switch)
-    "door_state": "door_state",                   # guessed
-    "battery_percent": "battery_pct",             # guessed
+    "temperature_c": "temperature",               # confirmed (env pod's sht41_temperature);
+                                                    # equipment pod's ds18b20_temperature reports
+                                                    # this SAME sensor_kind string -- see
+                                                    # _POD_SPECIFIC_KIND_TO_FIELD, which overrides
+                                                    # this default on the equipment pod
+    "relative_humidity_percent": "humidity",       # confirmed
+    "co2_ppm": "co2",                              # confirmed
+    "voc_index": "voc_index",                      # confirmed
+    "illuminance_lux": "light_lux",                # confirmed
+    "current_ma": "current",                       # confirmed key name (unit mA)
+    "vibration_rms_g": "vibration_rms",            # confirmed (real capability string; unit is g,
+                                                    # not m/s^2 as previously assumed -- see
+                                                    # hard_limits.vib_abnormal_rms and l2_context.py,
+                                                    # updated to match. The threshold NUMBERS there
+                                                    # are still placeholders pending real g-scale
+                                                    # calibration -- the unit label is fixed, the
+                                                    # values are not yet)
+    "motion": "pir_triggered",                     # confirmed (pir_motion sensor)
+    "contact": "door_state",                       # confirmed (reed_contact sensor)
+    "battery_percent": "battery_pct",              # not seen in real captured data yet, still a guess
+}
+
+# Some sensor_kind strings are ambiguous across pods -- the SAME kind is
+# reported by physically different sensors depending on which pod the device
+# belongs to (e.g. "temperature_c" is both the environment pod's ambient
+# sensor and the equipment pod's surface sensor). Looked up by pod_id first;
+# falls back to SENSOR_KIND_TO_FIELD when there's no pod-specific override.
+_POD_SPECIFIC_KIND_TO_FIELD = {
+    "pod_01": {"temperature_c": "temperature"},   # environment pod: sht41_temperature
+    "pod_03": {"temperature_c": "equip_temp"},    # equipment pod: ds18b20_temperature
 }
 
 # fields our system treats as booleans (raw telemetry is still a string)
 _BOOL_FIELDS = {"pir_triggered", "door_state"}
 
 
-def build_slot_field_map(attributes_response):
+def _discover_rule_kinds(attributes_response):
+    """
+    From "rule_{capability}_{rule_kind}_value" attributes (e.g.
+    "rule_temperature_c_numeric_high_threshold_value"), build
+    {capability: rule_kind} for every capability that has a threshold rule
+    configured on this device. capability is matched against the known
+    sensor_kind vocabulary (SENSOR_KIND_TO_FIELD / _POD_SPECIFIC_KIND_TO_FIELD)
+    since capability names can themselves contain underscores.
+    """
+    known_capabilities = set(SENSOR_KIND_TO_FIELD)
+    for overrides in _POD_SPECIFIC_KIND_TO_FIELD.values():
+        known_capabilities.update(overrides)
+
+    rule_kinds = {}
+    for attr in attributes_response:
+        key = attr.get("key", "")
+        if not (key.startswith("rule_") and key.endswith("_value")):
+            continue
+        middle = key[len("rule_"): -len("_value")]  # "temperature_c_numeric_high_threshold"
+        for cap in known_capabilities:
+            prefix = cap + "_"
+            if middle.startswith(prefix):
+                rule_kinds[cap] = middle[len(prefix):]
+                break
+    return rule_kinds
+
+
+def build_sensor_field_map(attributes_response, pod_id=None):
     """
     From one device's CLIENT_SCOPE attributes (list of {key, value, ...}, where
     attribute values come back as native JSON types, not strings), build
-    {"SLOT_0": "temperature", "SLOT_1": "humidity", ...}. Slots whose
-    _sensor_kind we don't recognize are skipped (returned map just omits them),
-    so an unexpected firmware vocabulary won't crash parsing -- it will simply
-    drop that slot until SENSOR_KIND_TO_FIELD is extended.
+    (field_map, gate_map):
+
+      field_map: {sensor_id: our_field_name} -- the raw reading key for each
+        field. Always the raw sensor_id, never an alarm_*_observed key -- of
+        the whole alarm_{capability}_{rule_kind}_* field group (doc 8.2:
+        _observed/_instance_id/_threshold/_acknowledged/_transition/_reason/
+        _sensor_id/_quality_flags), the ONLY one ever polled is _active, and
+        only for gating (see gate_map below); none of the others are read.
+
+      gate_map: {our_field_name: alarm_active_telemetry_key} -- for fields
+        whose capability has a threshold rule configured, the "..._active" key
+        to also poll. from_thingsboard_timeseries drops that field's reading
+        whenever this is currently "true" (hardware already flags the value
+        out of bounds, see doc 4.3 -- we don't want L2/L3 ingesting it as a
+        normal sample).
+
+    pod_id (our "pod_01"/"pod_02"/"pod_03") resolves sensor_kind values that
+    mean different things on different pods (see _POD_SPECIFIC_KIND_TO_FIELD);
+    pass it whenever known.
+
+    Sensor ids whose sensor_kind we don't recognize are skipped (the returned
+    maps just omit them), so an unexpected firmware vocabulary won't crash
+    parsing -- it will simply drop that reading until SENSOR_KIND_TO_FIELD is
+    extended.
     """
-    slot_map = {}
+    field_map = {}
+    gate_map = {}
+    pod_override = _POD_SPECIFIC_KIND_TO_FIELD.get(pod_id, {})
+    rule_kinds = _discover_rule_kinds(attributes_response)
     for attr in attributes_response:
         key = attr.get("key", "")
-        if key.endswith("_sensor_kind"):
-            slot = key[: -len("_sensor_kind")]  # "SLOT_0_sensor_kind" -> "SLOT_0"
-            field = SENSOR_KIND_TO_FIELD.get(attr.get("value"))
-            if field is not None:
-                slot_map[slot] = field
-    return slot_map
+        if not key.endswith("_sensor_kind"):
+            continue
+        sensor_id = key[: -len("_sensor_kind")]  # "sht41_temperature_sensor_kind" -> "sht41_temperature"
+        kind = attr.get("value")
+        field = pod_override.get(kind, SENSOR_KIND_TO_FIELD.get(kind))
+        if field is None:
+            continue
+        field_map[sensor_id] = field  # value always comes from the raw field
+        rule_kind = rule_kinds.get(kind)
+        if rule_kind:
+            gate_map[field] = f"alarm_{kind}_{rule_kind}_active"
+    return field_map, gate_map
 
 
 def _ms_to_datetime(ts_ms):
@@ -92,34 +170,80 @@ def _cast_value(field, raw_value):
     if raw_value is None:
         return None
     if field in _BOOL_FIELDS:
-        return str(raw_value).strip().lower() in ("1", "true", "on", "open")
+        s = str(raw_value).strip().lower()
+        if s in ("true", "1", "on", "open"):
+            return True
+        if s in ("false", "0", "off", "closed"):
+            return False
+        # real raw sensor fields for binary sensors encode state as a numeric
+        # string, not "true"/"false" -- confirmed real values: pir_motion
+        # reports "1.0"/"0.0", reed_contact reports "0.0" (pod2.json). Only the
+        # alarm _active/_acknowledged fields use literal "true"/"false".
+        try:
+            return float(s) != 0.0
+        except ValueError:
+            return False
     return float(raw_value)
 
 
-def from_thingsboard_timeseries(timeseries_response, slot_field_map):
+def _is_currently_active(active_points):
+    """
+    Whether an alarm is active RIGHT NOW, per the most recent "_active"
+    transition point in the pulled window. Deliberately NOT "was it active at
+    each individual reading's own timestamp": a reading taken before the
+    alarm's most recent active transition is stale evidence once we know the
+    alarm has since gone active -- reporting it as the "current" value would
+    smuggle an about-to-be-flagged (or already flagged) reading through just
+    because it happened to be sampled a moment earlier. Empty/no evidence in
+    this window -> False (fail-open: keep the reading rather than drop it when
+    we can't actually tell).
+    """
+    if not active_points:
+        return False
+    latest = max(active_points, key=lambda p: p["ts"])
+    return str(latest.get("value")).strip().lower() == "true"
+
+
+def from_thingsboard_timeseries(timeseries_response, field_map, gate_map=None):
     """
     Parse ONE device's (one pod's) timeseries response into a chronologically
     ordered list of (datetime, {field: value}) -- one entry per distinct
     timestamp, holding whatever fields reported at that timestamp.
 
-    timeseries_response: {"SLOT_0": [{"ts": <ms>, "value": "<str>"}, ...],
-                          "SLOT_0_quality_flags": [...], "SLOT_1": [...], ...}
-    slot_field_map: {"SLOT_0": "temperature", ...} from build_slot_field_map()
+    timeseries_response: {"sht41_temperature": [{"ts": <ms>, "value": "<str>"}, ...],
+                          "sht41_temperature_quality_flags": [...],
+                          "alarm_co2_ppm_numeric_high_threshold_active": [...], ...}
+    field_map, gate_map: from build_sensor_field_map()
 
-    Only the bare SLOT_<n> keys (actual readings) are used; suffixed keys
-    (_quality_flags / _sequence / _uptime_ms) are ignored for now. Assembling
-    these per-pod streams into full multi-pod Snapshots (aligning pods that
-    report at slightly different timestamps) is a separate downstream step,
-    not done here.
+    Only the keys listed in field_map (the raw sensor_id readings) are used;
+    every suffixed key (_quality_flags/_sequence/_uptime_ms, rule_* keys, and
+    the alarm_* group other than _active) is ignored. gate_map's _active keys
+    are read but never themselves stored as a field -- they only decide
+    whether their field is dropped from EVERY entry in this window (see
+    _is_currently_active). Assembling these per-pod streams into full
+    multi-pod Snapshots (aligning pods that report at slightly different
+    timestamps) is a separate downstream step, not done here.
     """
+    gate_map = gate_map or {}
     by_ts = {}  # ts_ms -> {field: value}
-    for slot_key, points in timeseries_response.items():
-        field = slot_field_map.get(slot_key)
+    for key, points in timeseries_response.items():
+        field = field_map.get(key)
         if field is None:
-            continue  # a suffixed key, or an unmapped slot -- skip
+            continue  # a suffixed/alarm/rule/active key, or an unmapped sensor id -- skip
         for point in points:
             ts_ms = point["ts"]
             by_ts.setdefault(ts_ms, {})[field] = _cast_value(field, point.get("value"))
+
+    # Hardware alarm gating: if a field's capability is CURRENTLY active (per
+    # the most recent _active transition in this window), drop that field from
+    # every entry in this window -- not just entries at-or-after the
+    # transition. A reading taken before the transition is stale once we know
+    # the alarm has since gone active; letting it through as "the current
+    # value" would defeat the point of gating (see _is_currently_active).
+    for field, active_key in gate_map.items():
+        if _is_currently_active(timeseries_response.get(active_key, [])):
+            for fields in by_ts.values():
+                fields.pop(field, None)
 
     # response is newest-first; return chronological (oldest-first)
     return [(_ms_to_datetime(ts_ms), by_ts[ts_ms]) for ts_ms in sorted(by_ts)]
