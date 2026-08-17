@@ -338,7 +338,10 @@ def _cold_start_thingsboard(config, client, poll_interval, devices):
         snap = _tb_poll_snapshot(client, devices, last_ts_ms, now_ms)
         last_ts_ms = now_ms
 
-        if snap is not None:
+        if snap is None:
+            print(f"[{datetime.fromtimestamp(now_ms/1000.0)}] poll: no data")
+        else:
+            print(f"[{snap.timestamp}] poll got: {snap.readings}")
             result = l2_pipeline.run(snap)
             # L2 is a real detector even during collection, not just a training
             # filter -- push its hits the same as the steady-state loop does.
