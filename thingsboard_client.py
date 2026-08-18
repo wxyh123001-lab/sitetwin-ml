@@ -126,3 +126,16 @@ class ThingsBoardClient:
         if details:
             body["details"] = details
         return self._post("/api/alarm", body)
+
+
+    # ---------- 9. Device heartbeat (keeps ML_ADVISOR shown Active in TB) ----------
+
+    def push_telemetry_by_token(self, device_token, payload):
+        """POST /api/v1/{device_token}/telemetry -- device-side telemetry push,
+        authenticated by the device's OWN Access Token (not the tenant JWT
+        used everywhere else in this class). Used purely to keep ML_ADVISOR's
+        Active/Inactive status in the TB UI meaningful; completely unrelated
+        to create_alarm()'s admin-level Alarm API."""
+        url = f"{self.host}/api/v1/{device_token}/telemetry"
+        resp = requests.post(url, json=payload, timeout=self.timeout)
+        resp.raise_for_status()
