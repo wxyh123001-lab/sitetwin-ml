@@ -11,8 +11,11 @@ env/
 .env
 *.env
 
-# Trained models: trained per-site at runtime via cold start, not source
-models/
+# Trained models: trained per-site at runtime via cold start, not source.
+# TEMPORARILY committed anyway (see git log) to test the real-data L2/L3 path
+# without waiting through cold start -- revert this line (re-ignore models/)
+# once that testing is done.
+# models/
 
 # Generated data and cold-start collection buffers
 training_data/
