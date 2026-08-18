@@ -232,6 +232,35 @@ def _tb_setup(config):
     return client, tbcfg["poll_interval_seconds"], devices, ml_advisor_device_id
 
 
+def _fill_missing_gate_evidence(client, dev, raw):
+    """
+    For any gated field whose _active key came back with ZERO points in this
+    poll's window (empty, not true/false), look up ThingsBoard's LATEST known
+    value for that key -- unbounded by the window -- and splice it into raw
+    before parsing. Without this, converters.py's gating has no evidence to
+    work with and falls back to "not active" purely because nothing happened
+    to transition during this specific poll, which is not the same as actually
+    knowing the alarm is inactive.
+
+    If true: still gated out (blocked) same as before.
+    If false: now included as normal data, instead of being kept by accident
+    via the same fail-open default that also covers "truly never fired".
+    If the lookup itself comes back empty too (the alarm has truly never
+    fired, ever), it still falls through to converters.py's fail-open default.
+    """
+    missing_keys = [key for key in dev["gate_map"].values() if not raw.get(key)]
+    if not missing_keys:
+        return
+    try:
+        latest = client.get_latest_timeseries(dev["device_id"], missing_keys)
+    except Exception as e:
+        print(f"failed to look up last known alarm state for {missing_keys}: {e}")
+        return
+    for key, points in latest.items():
+        if points:
+            raw[key] = points
+
+
 def _tb_poll_snapshot(client, devices, last_ts_ms, now_ms):
     """Pull each pod's new readings in (last_ts_ms, now_ms], and build one
     'current state' Snapshot per pod by folding the window's entries together
@@ -261,6 +290,7 @@ def _tb_poll_snapshot(client, devices, last_ts_ms, now_ms):
         if not keys:
             continue
         raw = client.get_timeseries(dev["device_id"], keys, last_ts_ms, now_ms)
+        _fill_missing_gate_evidence(client, dev, raw)
         parsed = from_thingsboard_timeseries(raw, dev["field_map"], dev["gate_map"])
         if parsed:
             merged = {}

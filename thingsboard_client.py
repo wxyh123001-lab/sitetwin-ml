@@ -95,6 +95,22 @@ class ThingsBoardClient:
         return self._get(
             f"/api/plugins/telemetry/DEVICE/{device_id}/values/timeseries", params=params)
 
+    def get_latest_timeseries(self, device_id, keys):
+        """
+        GET .../values/timeseries?keys=... with NO startTs/endTs -> the latest
+        value of each key regardless of any time window (per the doc's section 1:
+        "Get all current timeseries (latest value of every key)").
+
+        Used as a fallback when a poll's window has no active-state evidence for
+        a gated alarm field (e.g. it last transitioned before this poll's window
+        started): rather than silently treating "no evidence" as "not active",
+        look up whatever ThingsBoard last recorded for that key, however long
+        ago, and use that as the real last-known state.
+        """
+        params = {"keys": ",".join(keys)}
+        return self._get(
+            f"/api/plugins/telemetry/DEVICE/{device_id}/values/timeseries", params=params)
+
     # ---------- 8. Alarms (optional) ----------
 
     def get_alarms(self, device_id, page_size=100, page=0):

@@ -139,3 +139,19 @@ class MockThingsBoardClient:
                 if key in wanted:
                     merged.setdefault(key, []).extend(points)
         return merged
+
+    def get_latest_timeseries(self, device_id, keys):
+        """Interface parity with ThingsBoardClient (main._fill_missing_gate_evidence
+        calls this as a fallback). In practice every mocked reading with a rule
+        always carries its _active point alongside it (see mock_timeseries_point),
+        so a poll window is never missing gate evidence in the first place and
+        this is never actually invoked -- implemented anyway so nothing breaks
+        if that ever changes."""
+        pod_id = device_id
+        wanted = set(keys)
+        latest = {}
+        for ts_ms, reading in self._by_pod.get(pod_id, []):
+            for key, points in mock_timeseries_point(pod_id, reading, ts_ms).items():
+                if key in wanted:
+                    latest[key] = points  # later ts overwrites earlier (list is time-sorted)
+        return latest
