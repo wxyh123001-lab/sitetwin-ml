@@ -41,7 +41,10 @@ def generate_day(start_dt, days=1, step_minutes=5, seed=42, inject_anomalies=Non
     for i in range(total_steps):
         ts = start_dt + timedelta(minutes=i * step_minutes)
         hour = ts.hour + ts.minute / 60.0
-        is_work_hour = 8 <= hour <= 19 and ts.weekday() < 5
+        # daily active hours (8am-7pm), every day of the week -- the site/equipment
+        # runs 7 days a week, not just Mon-Fri, so there's deliberately no
+        # weekday check here (there used to be one; removed)
+        is_work_hour = 8 <= hour <= 19
 
         # occupancy ground truth (used only to generate data, not a system input)
         if is_work_hour:

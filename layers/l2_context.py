@@ -153,10 +153,10 @@ class ScenarioRules:
             snapshot.add_alert("L2", "scene_equip_stall_risk",
                                 self.cfg["equip_stall_risk"]["severity"],
                                 f"{pod_id} current elevated but no vibration, possible stall", pod_id)
-        if vib_label == "abnormal" and current_label == "normal":
+        if vib_label == "abnormal":
             snapshot.add_alert("L2", "scene_vibration_mechanical_fault",
                                 self.cfg["vibration_mechanical_fault"]["severity"],
-                                f"{pod_id} vibration abnormal but current normal, "
+                                f"{pod_id} vibration abnormal, "
                                 f"possible mechanical looseness or bearing fault", pod_id)
 
     def _check_door_left_open(self, snapshot, pod_id, labels):
