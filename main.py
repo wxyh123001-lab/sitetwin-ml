@@ -195,8 +195,11 @@ COLLECTION_BUFFER = "training_data/collection_buffer.pkl"
 
 def _tb_setup(config):
     """Log in and resolve each device's UUID + reading-key->field map once.
-    Returns (client, poll_interval, devices) where devices maps
-    pod_id -> {device_id, field_map, gate_map}."""
+    Returns (client, poll_interval, devices, ml_advisor_device_id) where
+    devices maps pod_id -> {device_id, field_map, gate_map}, and
+    ml_advisor_device_id is the fixed UUID of the standalone ML_ADVISOR
+    device (created once by hand in ThingsBoard) that all ML-originated
+    alarms are attached to -- never to a real Pod's own device."""
     from thingsboard_client import ThingsBoardClient
     from converters import build_sensor_field_map
 
@@ -207,6 +210,13 @@ def _tb_setup(config):
         raise SystemExit(
             "Set TB_USERNAME and TB_PASSWORD environment variables "
             "(see thingsboard_api_reference.md -- credentials must not be hardcoded).")
+
+    ml_advisor_device_id = tbcfg.get("ml_advisor_device_id")
+    if not ml_advisor_device_id:
+        raise SystemExit(
+            "config.yaml: thingsboard.ml_advisor_device_id is not set. "
+            "Create a device named ML_ADVISOR in ThingsBoard first, then put its "
+            "UUID here -- ML alarms must never be attached to a real Pod's own device.")
 
     client = ThingsBoardClient(tbcfg["host"])
     client.login(username, password)
@@ -219,7 +229,7 @@ def _tb_setup(config):
         print(f"resolved {device_name} -> {pod_id} ({device_id}), fields: {field_map}, "
               f"hardware-alarm-gated: {gate_map}")
 
-    return client, tbcfg["poll_interval_seconds"], devices
+    return client, tbcfg["poll_interval_seconds"], devices, ml_advisor_device_id
 
 
 def _tb_poll_snapshot(client, devices, last_ts_ms, now_ms):
@@ -270,32 +280,64 @@ def _tb_poll_snapshot(client, devices, last_ts_ms, now_ms):
     return build_snapshot(datetime.fromtimestamp(now_ms / 1000.0), readings_by_pod)
 
 
-def _push_alarms_to_tb(client, devices, severity_map, result):
+def _push_alarms_to_tb(client, ml_advisor_device_id, severity_map, result):
     """
-    Push every alert in this poll's result to ThingsBoard as an alarm, one per
-    pod it's attributed to (result["alerts"][i]["pod_ids"] -- see
-    state.Alert.target_pod_ids()). Fires on every poll where the condition
-    still holds; there is no de-dup/clearing yet, so an ongoing condition (e.g.
-    a door left open) re-pushes each poll until it clears -- a known
-    simplification, revisit if ThingsBoard ends up flooded with repeats.
+    Push every alert in this poll's result to ThingsBoard as a native Alarm,
+    attached to the standalone ML_ADVISOR device -- NEVER to a real Pod's own
+    device (see docs: ML advisories must stay physically separate from the
+    Pod/Coordinator alarm system mirrored via the TB Rule Chain, to avoid
+    mixing hardware-verified alarms with ML inferences on the same entity).
+
+    Any Pods the alert is attributed to (result["alerts"][i]["pod_ids"] -- see
+    state.Alert.target_pod_ids()) go into the alarm's `details.contributing_pods`
+    instead of choosing which device to attach to, so a single cross-Pod L2
+    scenario stays a single alarm record rather than being split one-per-pod.
+
+    Fires on every poll where the condition still holds; there is no
+    de-dup/clearing yet, so an ongoing condition (e.g. a door left open)
+    re-pushes each poll until it clears -- a known simplification, revisit if
+    ThingsBoard ends up flooded with repeats.
     Best-effort: a push failure is printed, not raised, so one bad push doesn't
     kill the poll loop.
     """
     for alert in result["alerts"]:
         pod_ids = alert["pod_ids"] or ([alert["pod_id"]] if alert["pod_id"] else [])
-        if not pod_ids:
-            continue  # nothing to attach the alarm to
         tb_severity = severity_map.get(alert["severity"], "INDETERMINATE")
-        for pod_id in pod_ids:
-            dev = devices.get(pod_id)
-            if dev is None:
-                continue
-            try:
-                client.create_alarm(
-                    dev["device_id"], alert["rule_id"], tb_severity,
-                    details={"message": alert["message"], "layer": alert["layer"]})
-            except Exception as e:
-                print(f"failed to push alarm {alert['rule_id']} for {pod_id} to ThingsBoard: {e}")
+        try:
+            client.create_alarm(
+                ml_advisor_device_id, alert["rule_id"], tb_severity,
+                details={
+                    "message": alert["message"],
+                    "layer": alert["layer"],
+                    "contributing_pods": pod_ids,
+                })
+        except Exception as e:
+            print(f"failed to push alarm {alert['rule_id']} (pods {pod_ids}) to ThingsBoard: {e}")
+
+
+_ml_advisor_token_warned = False
+
+
+def _send_ml_advisor_heartbeat(client, ml_advisor_token):
+    """Best-effort: push a heartbeat telemetry point to ML_ADVISOR using its
+    own Device Access Token, purely so TB shows it as Active while this
+    service is running (mirrors how bridge.py's persistent MQTT connection
+    keeps sitetwin-gateway-debug Active -- this is the REST-polling
+    equivalent, with the tradeoff of a delay bounded by ML_ADVISOR's Device
+    Profile Inactivity Timeout rather than being instant). Silently skipped
+    (with one warning) if TB_ML_ADVISOR_TOKEN isn't set -- this is a
+    cosmetic feature, not required for alarm pushing to work."""
+    global _ml_advisor_token_warned
+    if not ml_advisor_token:
+        if not _ml_advisor_token_warned:
+            print("TB_ML_ADVISOR_TOKEN not set -- ML_ADVISOR will show as "
+                  "Inactive in TB (cosmetic only, alarms still work).")
+            _ml_advisor_token_warned = True
+        return
+    try:
+        client.push_telemetry_by_token(ml_advisor_token, {"heartbeat": True})
+    except Exception as e:
+        print(f"failed to push ML_ADVISOR heartbeat: {e}")
 
 
 def _load_buffer():
@@ -313,7 +355,7 @@ def _save_buffer(snapshots):
         pickle.dump(snapshots, f)
 
 
-def _cold_start_thingsboard(config, client, poll_interval, devices):
+def _cold_start_thingsboard(config, client, poll_interval, devices, ml_advisor_device_id):
     """
     Collection phase for real data: poll, keep the L2 'confirmed normal'
     snapshots in a disk-backed buffer (L0/L1 are not run -- hardware already
@@ -331,10 +373,12 @@ def _cold_start_thingsboard(config, client, poll_interval, devices):
           f"spans {days} days (buffer has {len(buffer)} samples, "
           f"{collected_span_days(buffer):.1f} days so far).")
 
+    ml_advisor_token = os.environ.get("TB_ML_ADVISOR_TOKEN")
     last_ts_ms = int(time.time() * 1000)
     last_train_attempt = 0.0  # wall-clock of the last train/diagnose attempt
     while True:
         now_ms = int(time.time() * 1000)
+        _send_ml_advisor_heartbeat(client, ml_advisor_token)
         snap = _tb_poll_snapshot(client, devices, last_ts_ms, now_ms)
         last_ts_ms = now_ms
 
@@ -346,7 +390,7 @@ def _cold_start_thingsboard(config, client, poll_interval, devices):
             # L2 is a real detector even during collection, not just a training
             # filter -- push its hits the same as the steady-state loop does.
             if result["alert_state"] != "normal":
-                _push_alarms_to_tb(client, devices, severity_map, result)
+                _push_alarms_to_tb(client, ml_advisor_device_id, severity_map, result)
             else:
                 buffer.append(snap)
                 _save_buffer(buffer)
@@ -378,27 +422,29 @@ def run_with_thingsboard_data(config):
     Not yet tested against a live instance -- structurally complete, needs real
     host/credentials to actually run.
     """
-    client, poll_interval, devices = _tb_setup(config)
+    client, poll_interval, devices, ml_advisor_device_id = _tb_setup(config)
 
     if not models_ready(config):
-        _cold_start_thingsboard(config, client, poll_interval, devices)
+        _cold_start_thingsboard(config, client, poll_interval, devices, ml_advisor_device_id)
         print("-" * 60)
 
     # L0/L1 skipped -- hardware already handles data-quality gatekeeping and
     # hard-limit alerting; this pipeline only runs L2 (scenario rules) and L3 (LOF).
     pipeline = Pipeline(config, layers=["L2", "L3"])
     severity_map = config["thingsboard"].get("severity_map", {})
+    ml_advisor_token = os.environ.get("TB_ML_ADVISOR_TOKEN")
     last_ts_ms = int(time.time() * 1000)  # only pull data from now onward
     print(f"polling ThingsBoard every {poll_interval}s ...")
     while True:
         now_ms = int(time.time() * 1000)
+        _send_ml_advisor_heartbeat(client, ml_advisor_token)
         snap = _tb_poll_snapshot(client, devices, last_ts_ms, now_ms)
         last_ts_ms = now_ms
         if snap is not None:
             result = pipeline.run(snap)
             if result["alert_state"] != "normal":
                 _print_alert(result)
-                _push_alarms_to_tb(client, devices, severity_map, result)
+                _push_alarms_to_tb(client, ml_advisor_device_id, severity_map, result)
         time.sleep(poll_interval)
 
 

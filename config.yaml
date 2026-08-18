@@ -117,6 +117,10 @@ thingsboard:
     POD_67C3: pod_01
     POD_6647: pod_02
     POD_1FBA: pod_03
+  # ML判断结果挂靠的独立虚拟设备（不是任何真实Pod），避免跟Pod/Coordinator自己的
+  # 告警系统混在同一个设备实体下。需先在TB里手动创建一个名为 ML_ADVISOR 的设备，
+  # 这里填它的内部UUID（不是access token，是设备详情页URL里那串）。
+  ml_advisor_device_id: "3662fc90-9b28-11f1-8d0f-dd659b48fe4b"
   # 占位映射，尚未确认最终对应关系：我们内部三级severity -> ThingsBoard告警
   # severity枚举(CRITICAL/MAJOR/MINOR/WARNING/INDETERMINATE)。当前只是量级
   # 大致对应的占位值，改之前先跟你确认
