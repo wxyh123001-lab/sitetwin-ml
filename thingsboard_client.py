@@ -155,3 +155,26 @@ class ThingsBoardClient:
         url = f"{self.host}/api/v1/{device_token}/telemetry"
         resp = requests.post(url, json=payload, timeout=self.timeout)
         resp.raise_for_status()
+
+    # ---------- 10. RPC to a Pod (e.g. test_output) ----------
+
+    def send_rpc(self, device_id, method, params):
+        """POST /api/plugins/rpc/oneway/{deviceId} -- fire-and-forget RPC to
+        an actual Pod device, the same mechanism the TB dashboard's
+        adjust-threshold/ack buttons use (deviceService.sendOneWayRpcCommand
+        in the widget JS), just called from Python instead of a browser.
+        Raises on failure (bad target, pod not verified for that RPC, pod
+        offline, etc.) -- caller decides whether to swallow it.
+
+        NOT using _post() here: one-way RPC's success response is commonly
+        an empty 200 body (it doesn't wait for the device's own ack), and
+        _post() unconditionally calls resp.json(), which would raise on an
+        empty body even on success. Only re-raise for a genuine non-2xx."""
+        url = f"{self.host}/api/plugins/rpc/oneway/{device_id}"
+        body = {"method": method, "params": params}
+        resp = requests.post(url, json=body, headers=self._headers(), timeout=self.timeout)
+        if resp.status_code == 401 and self._username:
+            self.login(self._username, self._password)
+            resp = requests.post(url, json=body, headers=self._headers(), timeout=self.timeout)
+        resp.raise_for_status()
+        return resp.json() if resp.content else None

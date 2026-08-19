@@ -310,7 +310,14 @@ def _tb_poll_snapshot(client, devices, last_ts_ms, now_ms):
     return build_snapshot(datetime.fromtimestamp(now_ms / 1000.0), readings_by_pod)
 
 
-def _push_alarms_to_tb(client, ml_advisor_device_id, severity_map, result):
+TEST_OUTPUT_PULSE_MS = 5000  # fixed 5s pulse, not user-configurable (see design notes)
+TEST_OUTPUT_MIN_SEVERITY = "critical"  # only the most severe tier gets a
+    # physical response; warning/info still push the TB alarm as normal,
+    # just without touching any hardware -- Yang's call, not a technical
+    # limitation.
+
+
+def _push_alarms_to_tb(client, devices, ml_advisor_device_id, severity_map, result):
     """
     Push every alert in this poll's result to ThingsBoard as a native Alarm,
     attached to the standalone ML_ADVISOR device -- NEVER to a real Pod's own
@@ -322,6 +329,24 @@ def _push_alarms_to_tb(client, ml_advisor_device_id, severity_map, result):
     state.Alert.target_pod_ids()) go into the alarm's `details.contributing_pods`
     instead of choosing which device to attach to, so a single cross-Pod L2
     scenario stays a single alarm record rather than being split one-per-pod.
+
+    Also fires a fixed-duration test_output RPC (LED + buzzer, 5s) at every
+    Pod in pod_ids -- but ONLY for the most severe tier (severity ==
+    TEST_OUTPUT_MIN_SEVERITY); warning/info still push the TB alarm exactly
+    as before, just without any physical trigger. Deliberately ALL pods in
+    pod_ids, not just whichever one seems "primary", since that judgment
+    call isn't always well-defined for a genuinely cross-Pod scenario and
+    reusing pod_ids as-is needed no new design. A fixed short pulse (rather
+    than tracking active/silence state the way the Pod's own local alarms
+    do) is a deliberate fit for this layer's actual behaviour: there is no
+    active/cleared state machine here at all -- every poll where a
+    condition still holds just re-pushes the same alert, so a
+    self-expiring pulse re-fires on the same rhythm the condition re-fires,
+    with nothing to track and nothing to silence.
+    Pods whose LED/buzzer wiring hasn't been bench-verified yet (see
+    SiteTwin's shared_alarm_indicator_verified) will reject this RPC --
+    expected and harmless, silently skipped; the ThingsBoard alarm itself
+    is entirely unaffected either way.
 
     Fires on every poll where the condition still holds; there is no
     de-dup/clearing yet, so an ongoing condition (e.g. a door left open)
@@ -343,6 +368,22 @@ def _push_alarms_to_tb(client, ml_advisor_device_id, severity_map, result):
                 })
         except Exception as e:
             print(f"failed to push alarm {alert['rule_id']} (pods {pod_ids}) to ThingsBoard: {e}")
+        if alert["severity"] != TEST_OUTPUT_MIN_SEVERITY:
+            continue
+        for pod_id in pod_ids:
+            dev = devices.get(pod_id)
+            if dev is None:
+                continue
+            for target in ("led", "buzzer"):
+                try:
+                    client.send_rpc(dev["device_id"], "test_output",
+                                    {"target": target, "duration_ms": TEST_OUTPUT_PULSE_MS})
+                except Exception as e:
+                    # Expected/harmless for a Pod whose LED/buzzer wiring
+                    # isn't bench-verified yet -- not worth distinguishing
+                    # from other failures here, doesn't affect the alarm
+                    # already pushed above.
+                    print(f"test_output {target} skipped for {pod_id}: {e}")
 
 
 _ml_advisor_token_warned = False
@@ -420,7 +461,7 @@ def _cold_start_thingsboard(config, client, poll_interval, devices, ml_advisor_d
             # L2 is a real detector even during collection, not just a training
             # filter -- push its hits the same as the steady-state loop does.
             if result["alert_state"] != "normal":
-                _push_alarms_to_tb(client, ml_advisor_device_id, severity_map, result)
+                _push_alarms_to_tb(client, devices, ml_advisor_device_id, severity_map, result)
             else:
                 buffer.append(snap)
                 _save_buffer(buffer)
@@ -474,7 +515,7 @@ def run_with_thingsboard_data(config):
             result = pipeline.run(snap)
             if result["alert_state"] != "normal":
                 _print_alert(result)
-                _push_alarms_to_tb(client, ml_advisor_device_id, severity_map, result)
+                _push_alarms_to_tb(client, devices, ml_advisor_device_id, severity_map, result)
         time.sleep(poll_interval)
 
 
