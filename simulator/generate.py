@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from state import Snapshot
 
 
-def _temp_curve(hour, base=22.0, amplitude=2.0):
+def _temp_curve(hour, base=29.0, amplitude=2.0):
     return base + amplitude * math.sin((hour - 6) / 24 * 2 * math.pi)
 
 
@@ -53,13 +53,13 @@ def generate_day(start_dt, days=1, step_minutes=5, seed=42, inject_anomalies=Non
             occupied_ground_truth = rng.random() < 0.03
 
         # CO2: rises slowly when occupied, decays back to baseline when unoccupied (simplified first-order model)
-        target = 900.0 if occupied_ground_truth else 480.0
+        target = 1014.0 if occupied_ground_truth else 480.0
         co2_level += (target - co2_level) * 0.08 + rng.gauss(0, 5)
         co2_level = max(420.0, co2_level)
 
         temperature = _temp_curve(hour) + (1.0 if occupied_ground_truth else 0.0) + rng.gauss(0, 0.3)
         humidity = 45 + rng.gauss(0, 3)
-        voc = 40 + (30 if occupied_ground_truth else 0) + rng.gauss(0, 5)
+        voc = 140 + (30 if occupied_ground_truth else 0) + rng.gauss(0, 5)
         voc = max(10, voc)
 
         pir = occupied_ground_truth and rng.random() < 0.5
@@ -72,20 +72,18 @@ def generate_day(start_dt, days=1, step_minutes=5, seed=42, inject_anomalies=Non
         else:
             if rng.random() < (0.03 if occupied_ground_truth else 0.005):
                 door_is_open = True
-        light_lux = (300 if (occupied_ground_truth or is_work_hour) else 5) + rng.gauss(0, 10)
+        light_lux = (300 if (occupied_ground_truth or is_work_hour) else 17.5) + rng.gauss(0, 10)
 
         equip_running = is_work_hour and rng.random() < 0.6
-        # current: confirmed unit is mA. ~200mA running / near-0 idle is a placeholder
-        # small-motor magnitude, not a calibrated value -- still needs real hardware data.
-        current = (200.0 + rng.gauss(0, 20)) if equip_running else max(0, rng.gauss(0, 2))
-        # vibration_rms: unit is g, not m/s^2 as previously assumed -- corrected per
-        # TB_Data_Reference_for_ML.md (real capability name is vibration_rms_g).
-        # Delivered pre-computed by the sensor/firmware from the X/Y/Z axes (no
-        # aggregation logic needed on our end); assumed gravity-removed (standard
-        # practice for vibration RMS, distinct from raw acceleration magnitude) --
-        # baseline near 0 at rest, not near 1. These simulated magnitudes were
-        # tuned by feel, not against real g-scale data -- may need revisiting.
-        vibration = (0.15 + rng.gauss(0, 0.02)) if equip_running else max(0, rng.gauss(0, 0.005))
+        # current: unit is mA. ~120mA running / near-0 idle -- matches this site's
+        # real observed running current (previously a placeholder 200mA guess).
+        current = (120.0 + rng.gauss(0, 20)) if equip_running else max(0, rng.gauss(0, 2))
+        # vibration_rms: unit is g (real capability name is vibration_rms_g, see
+        # TB_Data_Reference_for_ML.md -- not m/s^2 as originally assumed).
+        # Delivered pre-computed by the sensor/firmware from the X/Y/Z axes,
+        # gravity-removed. ~0.3g running / ~0.004g idle -- matches this site's
+        # real observed range (previously a felt-not-measured 0.15g guess).
+        vibration = (0.3 + rng.gauss(0, 0.02)) if equip_running else max(0, rng.gauss(0, 0.005))
         equip_temp = _temp_curve(hour) + (5 if equip_running else 0) + rng.gauss(0, 0.5)
 
         readings = {

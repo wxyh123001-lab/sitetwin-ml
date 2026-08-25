@@ -183,6 +183,12 @@ def _cast_value(field, raw_value):
             return float(s) != 0.0
         except ValueError:
             return False
+    if field == "current":
+        # real ina219_current readings can be negative (direction-sensitive
+        # sensor, confirmed in pod3.json e.g. "-0.195") -- we only care about
+        # magnitude, so take the absolute value here at the parsing boundary,
+        # once, rather than every downstream consumer having to know about it.
+        return abs(float(raw_value))
     return float(raw_value)
 
 
