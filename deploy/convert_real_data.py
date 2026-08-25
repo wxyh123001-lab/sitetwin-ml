@@ -37,6 +37,27 @@ POD_FILES = {
     "pod_03": "pod3_full.json",
 }
 
+# Same seed values as main.py's _FIELD_SEED_DEFAULTS (training-data medians).
+# A field with no trustworthy reading yet -- either it hasn't reported for the
+# first time, or it's chronically gated from the very start (real hardware
+# thresholds for pod_03 current/vibration are miscalibrated, see main.py) --
+# used to fall through to a bare `continue`, leaving the field missing from
+# that Snapshot. make_features() then defaults a missing field to 0.0, which
+# is a physically-impossible value (e.g. temperature=0.0) that gets baked
+# into the training data itself as a spurious outlier. Seed with the median
+# instead, matching the live-poll fix. Keep these two dicts in sync by hand.
+_FIELD_SEED_DEFAULTS = {
+    "temperature": 28.4,
+    "humidity": 45.8,
+    "co2": 911.0,
+    "voc_index": 141.6,
+    "pir_triggered": False,
+    "light_lux": 16.7,
+    "vibration_rms": 0.006,
+    "equip_temp": 27.65,
+    "current": 0.3,
+}
+
 
 def _cast(field, raw_value):
     if field in _BOOL_FIELDS:
@@ -87,10 +108,19 @@ def build_pod_timeline(readings_by_field, gates_by_field):
     """Returns {ts_ms: {field: value}} -- one entry per distinct raw-reading
     timestamp for THIS pod, forward-filling every field to its latest known
     value as of that timestamp, with gating applied using each reading's own
-    timestamp against that field's full alarm history."""
+    timestamp against that field's full alarm history.
+
+    A field currently gated (or never reported at all) no longer drops out of
+    the Snapshot -- it falls back to the last trustworthy (ungated) reading
+    ever seen for that field, or to _FIELD_SEED_DEFAULTS if there hasn't been
+    one yet. This mirrors main.py's last_known cache + _seed_last_known for
+    the live poll path, and avoids baking literal 0.0 placeholders into the
+    training data for fields that just haven't reported / are chronically
+    gated."""
     all_ts = sorted({ts for pts in readings_by_field.values() for ts, _ in pts})
     idx = {f: -1 for f in readings_by_field}
     current_val = {f: None for f in readings_by_field}
+    last_known = {f: None for f in readings_by_field}  # last value seen while NOT gated
 
     timeline = {}
     for ts in all_ts:
@@ -100,12 +130,16 @@ def build_pod_timeline(readings_by_field, gates_by_field):
                 current_val[field] = pts[idx[field]][1]
         fields = {}
         for field, val in current_val.items():
-            if val is None:
-                continue
             gate_points = gates_by_field.get(field)
-            if gate_points and _active_at_or_before(gate_points, ts):
-                continue  # this field's capability is currently flagged -- drop it
-            fields[field] = val
+            gated = bool(gate_points and _active_at_or_before(gate_points, ts))
+            if val is not None and not gated:
+                last_known[field] = val
+                fields[field] = val
+            elif last_known[field] is not None:
+                fields[field] = last_known[field]  # gated right now -- fall back to last trustworthy reading
+            elif field in _FIELD_SEED_DEFAULTS:
+                fields[field] = _FIELD_SEED_DEFAULTS[field]  # never had a trustworthy reading yet -- seed with median
+            # else: no seed default defined for this field -- leave missing
         timeline[ts] = fields
 
     return timeline
