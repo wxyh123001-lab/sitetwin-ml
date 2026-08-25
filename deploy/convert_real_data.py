@@ -160,7 +160,18 @@ def main():
     all_ts = sorted({ts for tl in per_pod_timeline.values() for ts in tl})
     pod_ts_lists = {pod_id: sorted(tl.keys()) for pod_id, tl in per_pod_timeline.items()}
     pod_idx = {pod_id: -1 for pod_id in per_pod_timeline}
-    pod_current = {pod_id: {} for pod_id in per_pod_timeline}
+    # A pod that hasn't reported ANY reading yet (pod_02/pod_03 started
+    # reporting hours after pod_01 in the real data) used to be entirely
+    # absent from `readings` until its own timeline started, letting
+    # make_features() default ALL of that pod's fields to 0.0 at once --
+    # same class of bug as the per-field one above, just at the whole-pod
+    # level, and it hit ~20% of the real dataset (the multi-hour startup gap
+    # before every pod had reported at least once). Seed every pod with its
+    # own fields' medians from the start so it's never simply missing.
+    pod_current = {}
+    for pod_id in per_pod_timeline:
+        pod_fields = {field for (_sid, _cap, field, _rk, _th) in POD_SCHEMA[pod_id]}
+        pod_current[pod_id] = {f: _FIELD_SEED_DEFAULTS[f] for f in pod_fields if f in _FIELD_SEED_DEFAULTS}
 
     snapshots = []
     for ts in all_ts:
