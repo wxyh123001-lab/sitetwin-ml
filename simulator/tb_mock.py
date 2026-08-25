@@ -22,36 +22,35 @@ happened"; only the wire format and the parsing code path differ.
 # mock data is meant to represent normal operation (this mode collects/trains
 # on it, it isn't the anomaly-injection tool -- that's evaluate.py's job), so a
 # threshold has to actually sit above our simulator's normal range or every
-# single reading gets gated as "hardware already flagged it", which is what
-# happened testing this against the real captured current(-1.0)/vibration(0.0)
-# thresholds: both trip on ~100% of normal samples (any current >= 0mA or
-# vibration >= 0g trips them -- those read as unconfigured/placeholder values
-# on the real device, not real calibration). humidity(30.0) has the same
-# problem for a different reason: our OWN config.yaml labels 30-60% as the
-# *normal* band, so a "high" alarm AT 30 would flag all of normal operation.
-# temperature/co2/voc/illuminance/contact's real thresholds don't have this
-# problem (confirmed empirically -- normal simulated data rarely/never crosses
-# them) and are kept as captured. The three replaced below reuse OUR OWN
-# already-defined normal/abnormal boundaries instead (current_label's "high"
-# cutoff in l2_context.py, hard_limits.vib_abnormal_rms, labels.humidity.high)
-# so mock alarm behavior is at least internally consistent with the rest of
-# the system, pending real recalibration on the hardware side.
+# single reading gets gated as "hardware already flagged it". Several were
+# recalibrated a second time after simulator/generate.py's baselines were
+# retuned to match this site's real observed values (temperature/equip_temp
+# base 22->29C, VOC base 40->140) -- their old thresholds, fine against the
+# OLD baselines, ended up BELOW the new normal range and started gating
+# temperature/equip_temp/voc_index on ~10-100% of normal samples (confirmed
+# empirically: max observed values were temperature 32.65, voc_index 187.3,
+# equip_temp 37.21 against thresholds of 30/80/30). Bumped comfortably above
+# those maxima. door_state's threshold (1.0) also gated EVERY "door open"
+# reading, since a boolean field's "active" value IS 1.0 -- raised above 1.0
+# so the state itself is never treated as an alarm condition.
+# Lesson: whenever generate.py's baselines change, re-check these thresholds
+# too (see the empirical max-value check in the commit history).
 POD_SCHEMA = {
     "pod_01": [
-        ("sht41_temperature", "temperature_c", "temperature", "numeric_high_threshold", 30.0),
-        ("sht41_humidity", "relative_humidity_percent", "humidity", "numeric_high_threshold", 60.0),  # was real 30.0 -- see note above
+        ("sht41_temperature", "temperature_c", "temperature", "numeric_high_threshold", 35.0),
+        ("sht41_humidity", "relative_humidity_percent", "humidity", "numeric_high_threshold", 60.0),
         ("scd41_co2", "co2_ppm", "co2", "numeric_high_threshold", 1000.0),
-        ("sgp40_voc", "voc_index", "voc_index", "numeric_high_threshold", 80.0),
+        ("sgp40_voc", "voc_index", "voc_index", "numeric_high_threshold", 200.0),
     ],
     "pod_02": [
         ("bh1750_illuminance", "illuminance_lux", "light_lux", "numeric_high_threshold", 800.0),
         ("pir_motion", "motion", "pir_triggered", None, None),
-        ("reed_contact", "contact", "door_state", "contact_state_active_value", 1.0),
+        ("reed_contact", "contact", "door_state", "contact_state_active_value", 1.5),
     ],
     "pod_03": [
-        ("ds18b20_temperature", "temperature_c", "equip_temp", "numeric_high_threshold", 30.0),
-        ("ina219_current", "current_ma", "current", "numeric_high_threshold", 400.0),          # was real -1.0 -- see note above
-        ("adxl345_vibration", "vibration_rms_g", "vibration_rms", "numeric_high_threshold", 1.0),  # was real 0.0 -- see note above
+        ("ds18b20_temperature", "temperature_c", "equip_temp", "numeric_high_threshold", 40.0),
+        ("ina219_current", "current_ma", "current", "numeric_high_threshold", 400.0),
+        ("adxl345_vibration", "vibration_rms_g", "vibration_rms", "numeric_high_threshold", 1.0),
     ],
 }
 
