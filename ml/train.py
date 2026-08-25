@@ -23,20 +23,7 @@ from sklearn.neighbors import LocalOutlierFactor
 from sklearn.preprocessing import StandardScaler
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from ml.features import make_features, FEATURE_NAMES  # noqa: E402
-
-# Known site-verified [min, max] floors for a handful of fields, confirmed by
-# querying the ThingsBoard database directly (spans more history than any one
-# training snapshot pickle necessarily covers -- e.g. real_snapshots.pkl was
-# only 0.85 days when this was added, but the device's full history already
-# showed a wider swing). feature_range.npy (below) is never narrower than
-# these, even if the collected training window happens to undershoot them.
-# Update here whenever a fresher/wider DB-verified range is confirmed;
-# unlisted fields are left purely to whatever the training data shows.
-_FIELD_RANGE_FLOORS = {
-    "temperature": (23.555, 33.86),
-    "humidity": (36.672, 93.763),
-}
+from ml.features import make_features  # noqa: E402
 
 
 def train_all(snapshots, config, models_dir):
@@ -107,10 +94,6 @@ def train_all(snapshots, config, models_dir):
     # every field's range by construction but may not match any one
     # particular real joint state exactly).
     feature_range = np.stack([X.min(axis=0), X.max(axis=0)])
-    for field, (floor_lo, floor_hi) in _FIELD_RANGE_FLOORS.items():
-        idx = FEATURE_NAMES.index(field)
-        feature_range[0, idx] = min(feature_range[0, idx], floor_lo)
-        feature_range[1, idx] = max(feature_range[1, idx], floor_hi)
     np.save(os.path.join(models_dir, "feature_range.npy"), feature_range)
     print("Feature min/max range saved")
 
