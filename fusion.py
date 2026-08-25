@@ -2,9 +2,10 @@
 Fusion layer.
 Responsibilities:
   1. Merge all alerts produced by every layer this round
-  2. Severity is decided by L1/L2 only; an L3-only trigger is always lowest
+  2. Severity is decided by L2 only (L0/L1 are not part of this pipeline
+     anymore -- hardware handles that); an L3-only trigger is always lowest
      priority (info), the anomaly score is never mapped directly to a severity
-  3. If the L3 score coincides with an L1/L2 alert, that alert's severity can
+  3. If the L3 score coincides with an L2 alert, that alert's severity can
      be bumped up one level (confidence boost, L3 still doesn't decide severity)
   4. Emit the unified ml_output format
 """
@@ -25,7 +26,7 @@ class AlertFusion:
             l3_high = snapshot.anomaly_score >= 0.5
             if l3_high:
                 for a in alerts:
-                    if a.layer in ("L1", "L2") and a.severity != "critical":
+                    if a.layer == "L2" and a.severity != "critical":
                         a.severity = self._escalate(a.severity)
                         a.message += " (L3 independently flagged this combination as rare, confidence boosted)"
 

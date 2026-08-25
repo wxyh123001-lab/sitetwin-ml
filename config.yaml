@@ -1,28 +1,12 @@
 # SiteTwin ML 模块配置文件
 # 所有阈值集中在这里，方便硬件数据到位后校准，不需要改代码
 
-# ---------- L0 数据守门 ----------
-gatekeeper:
-  # 超过多久没收到某个pod的数据，判定为离线
-  offline_timeout_seconds:
-    pod_01: 600   # 环境舱，周期上报，允许更长超时
-    pod_02: 900   # 活动舱，事件驱动+心跳，心跳间隔更长
-    pod_03: 180   # 设备舱，上报频繁，超时应更快发现
-  low_battery_pct: 20
-  # 物理不可能的读数范围（超出则标记 sensor_fault）
-  physical_range:
-    temperature: [-20, 80]
-    humidity: [0, 100]
-    co2: [300, 10000]
-    voc_index: [0, 500]
-  # 读数长时间完全不变，怀疑传感器卡死
-  stuck_check:
-    window_minutes: 60
-    min_variation:
-      temperature: 0.1
-      co2: 5
+# L0（数据守门）/L1（硬阈值告警）已不在这个pipeline里跑，硬件那边已经处理数据质量
+# 把关和硬阈值告警了。下面 hard_limits 段虽然是原来L1用的名字，但里面几个阈值
+# （temperature_critical/co2_critical/vib_abnormal_rms）现在是L2的discretize()在用，
+# 不能删。
 
-# ---------- L1 绝对底线（不看上下文，达阈值即报） ----------
+# ---------- 绝对阈值（L2 discretize() 用来判定 critical/abnormal 分档） ----------
 hard_limits:
   temperature_critical: 32       # °C
   co2_critical: 2500             # ppm
@@ -115,12 +99,12 @@ thingsboard:
   # 下面是占位，等拿到真实设备名后替换
   device_to_pod:
     POD_67C3: pod_01
-    POD_6647: pod_02
-    POD_1FBA: pod_03
+    POD_3C60: pod_02
+    POD_ABD1: pod_03
   # ML判断结果挂靠的独立虚拟设备（不是任何真实Pod），避免跟Pod/Coordinator自己的
   # 告警系统混在同一个设备实体下。需先在TB里手动创建一个名为 ML_ADVISOR 的设备，
   # 这里填它的内部UUID（不是access token，是设备详情页URL里那串）。
-  ml_advisor_device_id: "3662fc90-9b28-11f1-8d0f-dd659b48fe4b"
+  ml_advisor_device_id: "bd975570-a09c-11f1-93db-2da8cb1d350a"
   # 占位映射，尚未确认最终对应关系：我们内部三级severity -> ThingsBoard告警
   # severity枚举(CRITICAL/MAJOR/MINOR/WARNING/INDETERMINATE)。当前只是量级
   # 大致对应的占位值，改之前先跟你确认

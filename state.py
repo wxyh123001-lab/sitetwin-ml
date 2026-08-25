@@ -8,8 +8,8 @@ from typing import Optional
 
 @dataclass
 class Alert:
-    layer: str          # "L1" / "L2" / "L3"
-    rule_id: str         # e.g. "hard_temp_max" / "scene1_unoccupied_temp"
+    layer: str          # "L2" / "L3"
+    rule_id: str         # e.g. "scene_equip_stall_risk" / "l3_rare_pattern"
     severity: str         # "info" / "warning" / "critical"
     message: str
     pod_id: Optional[str] = None

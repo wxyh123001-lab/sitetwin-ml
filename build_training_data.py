@@ -1,8 +1,9 @@
 """
 Generate L3 training data: simulate multiple days of "normal" data -> filter -> save.
 Implements the "one-shot gatekeeping" approach discussed earlier:
-  run L0+L1+L2 over historical data, keep only the records where none of the
-  three layers fired, as the training set.
+  run L2 over historical data (L0/L1 are not run -- hardware already handles
+  data-quality gatekeeping and hard-limit alerting), keep only the records
+  where it didn't fire, as the training set.
 """
 import pickle
 from datetime import datetime
@@ -17,8 +18,8 @@ def main():
     with open("config.yaml", "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    # L3 isn't needed during training (no model yet), only L0-L2 filtering
-    pipeline = Pipeline(config, layers=["L0", "L1", "L2"])
+    # L3 isn't needed during training (no model yet), only L2 filtering
+    pipeline = Pipeline(config, layers=["L2"])
 
     snapshots = generate_day(
         start_dt=datetime(2026, 7, 1, 0, 0),

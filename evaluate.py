@@ -1,7 +1,8 @@
 """
-Ablation experiment: compares detection rate across three pipeline configs
-L1-only / L1+L2 / all layers (with L3) on the same batch of "artificially
-injected" test data.
+Ablation experiment: compares detection rate across pipeline configs
+L2-only / L2+L3 (full) on the same batch of "artificially injected" test data.
+L0/L1 are not part of this pipeline anymore -- the hardware side handles data-
+quality gatekeeping and hard-limit alerting itself.
 
 This is the core output for the evaluation section - the point isn't to
 compare how fancy the models are, it's to quantify how much detection
@@ -18,7 +19,7 @@ def build_test_set(config, seed=99):
     """
     Generate one day of data, injecting each anomaly type once, and record each
     injection's time window (not a single point) to compute detection rate.
-    Point-in-time types (matching L0/L1's instantaneous checks) get
+    Point-in-time types (matching L2's instantaneous checks) get
     duration_minutes=0; trend/duration types get a duration read straight from
     config.yaml's own scenario window so the injection lasts long enough for
     the target scenario's history buffer to build up -- a constant elevated
@@ -90,9 +91,8 @@ def main():
     snapshots, injection_windows = build_test_set(config)
 
     configs = [
-        ["L0", "L1"],
-        ["L0", "L1", "L2"],
-        ["L0", "L1", "L2", "L3"],
+        ["L2"],
+        ["L2", "L3"],
     ]
 
     print(f"{'Pipeline config':<20}{'Detected/Total':<15}{'Detection rate':<10}{'False positives':<10}")
