@@ -292,12 +292,21 @@ def _tb_poll_snapshot(client, devices, last_ts_ms, now_ms):
         raw = client.get_timeseries(dev["device_id"], keys, last_ts_ms, now_ms)
         _fill_missing_gate_evidence(client, dev, raw)
         parsed = from_thingsboard_timeseries(raw, dev["field_map"], dev["gate_map"])
-        if parsed:
-            merged = {}
-            for _, fields in parsed:  # chronological -- later overwrites earlier, per field
-                merged.update(fields)
-            if merged:
-                readings_by_pod[pod_id] = merged
+        # Carry forward each field's last known value across polls, persisted
+        # on `dev` -- most sensor fields don't report a fresh point on every
+        # single poll (deadband-throttled, can lag well past poll_interval_
+        # seconds), so a field missing from THIS window doesn't mean we never
+        # knew it, just that it didn't change. Without this, most fields go
+        # missing on most polls and make_features() silently defaults them to
+        # 0 -- a feature vector that looks nothing like training data (which
+        # was built from full history, not a single narrow window) and scores
+        # as wildly anomalous every time. Confirmed live: readings dicts were
+        # arriving with only 1-4 of 9 fields per poll before this fix.
+        last_known = dev.setdefault("last_known", {})
+        for _, fields in parsed:  # chronological -- later overwrites earlier, per field
+            last_known.update(fields)
+        if last_known:
+            readings_by_pod[pod_id] = dict(last_known)
     if not readings_by_pod:
         return None
     # Timestamp the snapshot with the poll window's own "now" (now_ms), not
@@ -512,6 +521,7 @@ def run_with_thingsboard_data(config):
         snap = _tb_poll_snapshot(client, devices, last_ts_ms, now_ms)
         last_ts_ms = now_ms
         if snap is not None:
+            print(f"[{snap.timestamp}] poll got: {snap.readings}")
             result = pipeline.run(snap)
             if result["alert_state"] != "normal":
                 _print_alert(result)
