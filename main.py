@@ -111,6 +111,7 @@ def _mock_tb_devices(client):
     for pod_id in ("pod_01", "pod_02", "pod_03"):
         field_map, gate_map = build_sensor_field_map(client.get_attributes(pod_id), pod_id=pod_id)
         devices[pod_id] = {"device_id": pod_id, "field_map": field_map, "gate_map": gate_map}
+    _seed_last_known(devices)
     return devices
 
 
@@ -193,6 +194,46 @@ def run_with_simulated_thingsboard_data(config):
 COLLECTION_BUFFER = "training_data/collection_buffer.pkl"
 
 
+# Seed values for _tb_poll_snapshot's "last known" cache (see there), used
+# only until a field's first real (ungated) reading arrives. Medians from
+# training_data/combined_snapshots.pkl (real + tuned-simulator data), not
+# guesses -- chosen over the mean because current/vibration_rms are bimodal
+# (idle most of the time, briefly high when running); the median reflects the
+# far more common idle state, unlike the mean which gets pulled up by the
+# running periods. Without this, a field that's NEVER had a real reading yet
+# (e.g. pod_03's current/vibration_rms/equip_temp, chronically gated by the
+# real device's own miscalibrated hardware alarm thresholds -- see the
+# thingsboard_api findings) would default to 0.0 in make_features(), which is
+# not a plausible reading for any of these fields (equip_temp=0C is nowhere
+# near this room's real range) and reads as a massive, constant outlier to
+# L3 for as long as that field stays unseeded. This doesn't fix the missing
+# data -- it just stops literal physically-impossible zeros from reaching the
+# model while the real fix (recalibrating the hardware thresholds) is pending.
+_FIELD_SEED_DEFAULTS = {
+    "temperature": 28.4,
+    "humidity": 45.8,
+    "co2": 911.0,
+    "voc_index": 141.6,
+    "pir_triggered": False,
+    "light_lux": 16.7,
+    "vibration_rms": 0.006,
+    "equip_temp": 27.65,
+    "current": 0.3,
+}
+
+
+def _seed_last_known(devices):
+    """Pre-populate each device's last-known-value cache with the seed
+    defaults above, for whichever fields that device actually reports (per
+    its field_map) -- so a field that's never had a real reading starts from
+    a plausible value instead of silently defaulting to 0.0 in make_features()."""
+    for dev in devices.values():
+        last_known = dev.setdefault("last_known", {})
+        for field in set(dev["field_map"].values()):
+            if field in _FIELD_SEED_DEFAULTS:
+                last_known.setdefault(field, _FIELD_SEED_DEFAULTS[field])
+
+
 def _tb_setup(config):
     """Log in and resolve each device's UUID + reading-key->field map once.
     Returns (client, poll_interval, devices, ml_advisor_device_id) where
@@ -229,6 +270,7 @@ def _tb_setup(config):
         print(f"resolved {device_name} -> {pod_id} ({device_id}), fields: {field_map}, "
               f"hardware-alarm-gated: {gate_map}")
 
+    _seed_last_known(devices)
     return client, tbcfg["poll_interval_seconds"], devices, ml_advisor_device_id
 
 
