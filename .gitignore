@@ -12,9 +12,11 @@ env/
 *.env
 
 # Trained models: trained per-site at runtime via cold start, not source.
-# A snapshot is kept on the `models` branch (for skipping cold start when
-# testing the real-data L2/L3 path) -- master stays clean.
-models/
+# Ignored on master (each site trains its own). THIS branch (`models`) is the
+# one exception -- models/ is deliberately tracked here so it can be checked
+# out to skip cold start when testing the real-data L2/L3 path. Do not merge
+# this line back into master.
+# models/
 
 # Generated data and cold-start collection buffers
 training_data/
