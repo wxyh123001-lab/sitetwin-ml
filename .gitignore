@@ -21,6 +21,11 @@ env/
 # Generated data and cold-start collection buffers
 training_data/
 
+# Raw ThingsBoard dumps pulled by deploy/fetch_all_data.sh -- real site data,
+# repo is public, kept local-only. Regenerate via that script + convert with
+# deploy/convert_real_data.py rather than committing the dumps themselves.
+deploy/pod*_full.json
+
 # Model-selection experiment outputs (regenerable via ml/train_*.py)
 ml/experiments/
 
