@@ -84,6 +84,19 @@ def train_all(snapshots, config, models_dir):
     np.save(os.path.join(models_dir, "lof_raw_dist.npy"), np.sort(lof_raw))
     print("Score calibration distributions saved")
 
+    # Per-feature [min, max] ever seen in training, in raw (unscaled) units.
+    # L3Layer uses this as a range gate: LOF flags rare *combinations*, but a
+    # snapshot where every single field is individually within its own
+    # historically-observed range is treated as normal regardless of what the
+    # joint LOF score says -- avoids false positives from combinations that
+    # happen to be under-represented in a still-small training set (e.g. a
+    # cold-start seed vector built from field medians, which lands within
+    # every field's range by construction but may not match any one
+    # particular real joint state exactly).
+    feature_range = np.stack([X.min(axis=0), X.max(axis=0)])
+    np.save(os.path.join(models_dir, "feature_range.npy"), feature_range)
+    print("Feature min/max range saved")
+
     return {"lof": lof, "scaler": scaler}
 
 

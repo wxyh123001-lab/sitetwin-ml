@@ -53,10 +53,24 @@ class L3Layer:
             self.scaler = joblib.load(os.path.join(d, "scaler.joblib"))
             self.lof = joblib.load(os.path.join(d, "lof.joblib"))
             self.lof_dist = np.load(os.path.join(d, "lof_raw_dist.npy"))
+            # Optional: older models trained before this was added won't have
+            # it -- fall back to "no range gate" rather than failing to load.
+            range_path = os.path.join(d, "feature_range.npy")
+            self.feature_range = np.load(range_path) if os.path.exists(range_path) else None
             self.loaded = True
         except FileNotFoundError:
             # model not trained yet, L3 stays inactive without affecting L0-L2
             self.loaded = False
+
+    def _within_seen_range(self, x_raw):
+        """True if every feature value has appeared somewhere in the training
+        data's own [min, max] for that field -- see the comment in
+        ml/train.py where feature_range.npy is built for why this overrides
+        LOF's joint-rarity score."""
+        if self.feature_range is None:
+            return False
+        feat_min, feat_max = self.feature_range[0], self.feature_range[1]
+        return bool(np.all((x_raw >= feat_min) & (x_raw <= feat_max)))
 
     def process(self, snapshot):
         if not self.loaded:
@@ -71,7 +85,7 @@ class L3Layer:
         snapshot.anomaly_scores_by_model = {"lof": lof_score}
         snapshot.anomaly_score = lof_score
 
-        if snapshot.anomaly_score >= self.alert_threshold:
+        if snapshot.anomaly_score >= self.alert_threshold and not self._within_seen_range(x[0]):
             # Severity is intentionally hardcoded "info", not read from
             # config["fusion"]["l3_only_severity"] -- that config key exists but
             # fusion.py never reads it, so editing it has no effect. Kept
