@@ -22,6 +22,11 @@ converters.py          MQTT/ThingsBoard/串口 -> 统一payload格式的翻译�
                        alarm _active=true时门禁过滤（不读_observed）、布尔字段按真实"1.0"/"0.0"编码
 thingsboard_client.py  ThingsBoard REST API 客户端（登录/查设备/拉时序/建告警，凭证走环境变量）
 cold_start.py          冷启动：按站点收集正常数据 → 诊断 → 本地训练L3（见下方"运行"）
+deploy/
+  fetch_all_data.sh    拉取真实ThingsBoard全量历史数据（3个pod的原始读数+硬件alarm_*_active，
+                        仅`models`分支有，master没有）
+  convert_real_data.py 把fetch_all_data.sh的输出转成训练用的Snapshot pickle，含字段级/整pod级
+                        的"从未上报过/长期被硬件门禁"回退填充逻辑（仅`models`分支有）
 ml/
   features.py          特征工程（训练/推理共用同一份逻辑）
   train.py              L3(LOF)离线训练脚本（生产用，超参数固定 n_neighbors=46）
@@ -40,6 +45,8 @@ evaluate.py              消融实验：对比不同层组合的检出率（历�
 main.py                  端到端入口，--source sim|sim-thingsboard|thingsboard，含冷启动训练
 deploy/
   install_service.sh    一键注册成 Pi 上的 systemd 服务（开机自启+崩溃重启），见下方"开机自启"
+SIMULATOR_THRESHOLDS.md  模拟数据生成基线 + 硬件网关阈值 + config.yaml检测阈值 汇总表
+L3_CHANGES.md            L3层历次改动记录（种子/last_known填充、feature_range门控等，见下方局限）
 ```
 
 ## 运行
@@ -50,11 +57,21 @@ deploy/
 自身时间跨度（`collection_days` 天），训练前诊断会检查每个特征是否都变化过（避免拿
 "设备全程没运行"这种数据训出坏模型）。详见 `cold_start.py` 与 config.yaml 的 `cold_start` 段。
 
-> **⚠️ 临时状态**：`models/` 目录目前**被临时提交进了仓库**（`.gitignore` 里
-> `models/` 那行临时注释掉了），是为了测试真实ThingsBoard数据在L2/L3的效果，跳过
-> 7天收集等待。这不是长期打算——测完之后需要改回来（把 `.gitignore` 的 `models/`
-> 取消注释、`git rm -r --cached models/`），不然新站点部署时会误用这份不属于自己的
-> 模型，而不是走冷启动训自己的。
+> **分支说明**：仓库分两个分支，是有意的长期设计，不是临时状态。
+> - `master`：`.gitignore` 里 `models/` 正常生效（不提交模型），每个新站点部署都会
+>   老老实实走冷启动，训自己站点的模型——这是生产部署该用的分支。
+> - `models`：`.gitignore` 里 `models/` 那行注释掉，模型文件（`lof.joblib` /
+>   `scaler.joblib` / `lof_raw_dist.npy` / `feature_range.npy`）跟着代码一起提交，
+>   还额外带 `deploy/fetch_all_data.sh` + `deploy/convert_real_data.py` 两个脚本，
+>   用来拉当前测试站点的真实ThingsBoard数据训练——目的是跳过7天收集等待、快速用
+>   真实数据测试L2/L3效果。**这个分支上的模型是绑定当前这一个测试站点的**，换新
+>   站点部署时应该用 `master`，不要把这个分支的模型误当成通用模型搬过去。
+>
+> 两个分支上除 `models/`、`deploy/fetch_all_data.sh`、`deploy/convert_real_data.py`、
+> `.gitignore` 外，其余代码保持同步；同步方式固定用
+> `git checkout master -- <file>`（或反过来）逐个文件搬，**不要用 `git merge`**——
+> `models` 分支没有独立的提交历史，`merge master` 会直接fast-forward，把
+> `models/` 的追踪状态和上面这些差异文件全部冲掉。
 
 ```bash
 pip install -r requirements.txt
@@ -209,9 +226,16 @@ sudo systemctl restart sitetwin-ml
    （原因：PIR只能探测动作、无法探测存在；门磁的状态-事件转换在现场不可靠；
    CO2在多设备环境下无法可靠归因于人体呼吸。详见架构说明文档七/八节的完整论证）。
    现有场景规则改为只使用可直接观测的持续状态（如门磁开关状态本身）或跨pod信号互相印证
-4. 训练数据目前全部来自模拟器，真实硬件数据到位后需要重新走一遍
-   build_training_data.py -> train.py 流程；本次移除occupancy相关的两个L3特征
-   （occ_occupied/occ_unoccupied）后，特征维度从13降到11，已重新生成训练数据并重训
+4. `models` 分支现在用的是真实数据训练的模型（`deploy/fetch_all_data.sh` +
+   `deploy/convert_real_data.py`，9339条快照，时间跨度只有0.85天）。`master`
+   分支的默认路径仍是模拟数据（`build_training_data.py` -> `train.py`），移除
+   occupancy相关两个L3特征后特征维度从13降到11。
+   **真实数据当前的已知局限**：只有0.85天，观测到的正常范围很窄（比如温度只有
+   26.94~31.0℃），后续攒够真实数据（建议还是按`cold_start.collection_days`的
+   7天）应该重新训练，避免把"暂时没见过但其实正常"的范围（比如季节性温差）
+   误判为异常。真实数据转换过程中发现并修了两个"字段值被静默置0"的bug（某字段
+   从未上报过/长期被硬件门禁 时，之前会整体从Snapshot里消失，被`make_features`
+   当成读数0.0 处理，而不是真的0），详见 `L3_CHANGES.md`
 5. L3 的严重度不直接来自异常分数，分数只用于排序和对L2告警的置信度加成，
    这是有意的设计（见项目讨论记录中"异常分数≠严重度"的论证）
 6. 用户反馈抑制机制（ignore学习）尚未实现，当前是"一次性训练+定期重训"的简化方案
@@ -226,3 +250,22 @@ sudo systemctl restart sitetwin-ml
 9. `ina219_voltage`（pod_03，真实抓包里确认存在、配了硬件报警规则）目前完全没接：
    `converters.py`没有对应的内部字段，直接跳过。要不要加`voltage`字段，涉及
    `features.py`/`state.py`/L2场景改动，本次先不做（用户确认过跳过）
+10. 真实设备`ina219_current`读数会出现负值（方向敏感传感器），`converters.py`
+    的`_cast_value`已对`current`字段取绝对值处理
+11. `main.py`实时轮询路径新增了两级"缺失字段兜底"机制：(a) 跨poll的
+    `last_known`缓存——一个字段在本次poll窗口没有新证据时，用上次收到的真实值
+    顶上，不再让它在某次poll里直接消失；(b) `_seed_last_known`——针对从开机起
+    从未收到过任何真实值的字段（比如pod_03的`current`/`vibration_rms`，真实
+    硬件阈值配置有问题，长期处于门禁状态），用训练数据中位数预置一个初始值，
+    避免物理上不可能的0.0直接进入模型。同样的两层兜底逻辑在
+    `deploy/convert_real_data.py`离线转换真实数据时也补上了（见上面第4条和
+    `L3_CHANGES.md`）
+12. L3新增了`feature_range.npy`门控：只要当前快照每个字段的值都在训练数据
+    历史最小~最大值范围内，就不触发`l3_rare_pattern`，不管LOF联合分布打分
+    多高——用来压掉冷启动/长期门禁场景下"每个字段单独看都正常，但这个具体
+    组合训练数据里没见过"导致的误报。详见 `L3_CHANGES.md`
+13. `config.yaml`/`simulator/generate.py`的模拟数据基线已按当前测试站点实测值
+    重新校准（温度29℃、CO2有人1014/无人480、VOC140、湿度45、光照关灯17.5、
+    电流运行120mA、振动0.3g、设备温度29℃），详细数值和对应的硬件网关阈值见
+    `SIMULATOR_THRESHOLDS.md`；`scene_vibration_mechanical_fault`场景简化为
+    只看振动是否abnormal，不再联合看电流
