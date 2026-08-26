@@ -18,8 +18,15 @@ env/
 # this line back into master.
 # models/
 
-# Generated data and cold-start collection buffers
-training_data/
+# Generated data and cold-start collection buffers. THIS branch (`models`)
+# tracks the pure-simulator files (normal_snapshots.*) so they ship with the
+# model for quick testing -- but real_snapshots.pkl / combined_snapshots.pkl
+# / collection_buffer.pkl all contain actual site telemetry (derived from
+# deploy/pod*_full.json or a live cold-start run) and stay local-only, same
+# reasoning as the raw dumps below (repo is public).
+training_data/real_snapshots.pkl
+training_data/combined_snapshots.pkl
+training_data/collection_buffer.pkl
 
 # Raw ThingsBoard dumps pulled by deploy/fetch_all_data.sh -- real site data,
 # repo is public, kept local-only. Regenerate via that script + convert with
